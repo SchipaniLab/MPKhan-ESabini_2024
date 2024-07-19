@@ -1,0 +1,1292 @@
+---
+title: "PRX-TFAM-HIF1dPA Periosteal cells V3"
+author: "Kat Beigel"
+date: "2024-02-28"
+output: html_document
+---
+
+Version 3 analysis:
+  Not using SCTransform, using Standard Approach.
+  Doublets removed.
+  Filtering for cells with percent_mito < 15% and nFeatures > 200.
+  
+CHANGES FROM V1: Subset Seurat object to remove clusters 3 and 6 from the "resolution 0.1" clustering of V2.
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# library(Seurat)
+library(Seurat, lib.loc = "/usr/lib64/R/library")
+options(Seurat.object.assay.version = 'v3') # NEED TO DO THIS BECAUSE DOUBLET FINDER DOES NOT KNOW THE V5 format
+library(Matrix)
+library(readr)
+library(DoubletFinder)
+library(ggplot2)
+library(biomaRt)
+library(glmGamPoi)
+library(dplyr)
+library(tidyr)
+library(mgsub)
+library(cowplot)
+
+```
+
+```{r Set version for filenames}
+
+version = "V3"
+
+# For loading parts of the previous analysis that are the same as this new version
+load_version = "V2"
+
+# rdatadir_saved <- paste0("", version, "/")
+
+project = "PRX-TFAM-HIF1dPA"
+
+```
+
+```{r Write sessionInfo to file}
+# Writing session info to file
+sink("sessionInfo_V3.txt")
+sessionInfo()
+sink()
+
+```
+
+```{r Load pre-processed Seurat object}
+
+basedir <- "PRX-TFAM-HIF1dPA/"
+
+filepath <- "PRX-TFAM-HIF1dPA/output/Seurat/"
+
+soupxpath <- "PRX-TFAM-HIF1dPA/output/SoupX/processed_data/"
+
+```
+
+``` {r Check if ouput dirs exist; if not, create}
+
+ifelse(!dir.exists(file.path(filepath, paste0("PDFs_", version))),
+       dir.create(file.path(filepath, paste0("PDFs_", version))), "directory exists")
+
+dirs <- c("Seurat_QC_Doublet_PDFs_", "Integrated_Data_PDFs_", "Seurat_DE_PDFs_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath, "PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+
+ifelse(!dir.exists(file.path(filepath, paste0("dataframes_", version))),
+       dir.create(file.path(filepath, paste0("dataframes_", version))), "directory exists")
+
+dirs <- c("Cluster_Markers_", "Cells_per_Cluster_", "Differential_Expression_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "dataframes_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath, "dataframes_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+ifelse(!dir.exists(file.path(filepath, paste0("RDS_", version))),
+       dir.create(file.path(filepath, paste0("RDS_", version))), "directory exists")
+
+
+dirs <- c("Marker_VlnPlots_", "Marker_FeatPlots_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "PDFs_", version, "/", "Integrated_Data_PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath,  "PDFs_", version, "/", "Integrated_Data_PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+
+```
+
+```{r Cell cycle gene conversion function (for section below)}
+
+ #Cell cycle genes for human included with seurat but need to convert from seurat's human markers to mouse IDs.
+  #do that with the convertHumanGeneList function found here
+  #https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+
+convertHumanGeneList <- function(x){
+  require("biomaRt")
+  human <- useMart("ensembl", dataset = "hsapiens_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
+  mouse <- useMart("ensembl", dataset = "mmusculus_gene_ensembl", host = "https://dec2021.archive.ensembl.org/")
+  genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+  humanx <- unique(genesV2[, 2])
+  # Print the first 6 genes found to the screen
+  print(head(humanx))
+  return(humanx)
+}
+
+#chooseCRANmirror()
+s.genes <- cc.genes$s.genes
+g2m.genes <- cc.genes$g2m.genes
+m.s.genes <- convertHumanGeneList(cc.genes.updated.2019$s.genes)
+m.g2m.genes <- convertHumanGeneList(cc.genes.updated.2019$g2m.genes)
+
+```
+
+# CHANGES FROM PRX-TFAM PREVIOUS ANALYSIS
+
+All ANALYSIS steps are kept to be consistent with the previous data analysis.
+The only changes made from the previous script for the previous PRX-TFAM project (file `PRX-TFAM/Seurat_Analysis.Rmd`) are basic operations (how files are loaded, etc.) to make things clearner and easier to understand.
+
+Changelist:
+- I have switched to using .Rds rather than .RData files because .Rds is generally better for single objects.
+- I made a table of the multiplet rates to be able to pull rates from for DoubletFinder
+
+```{r Seurat Filtering}
+
+# Keep default resolution for each sample before integration. NOT using SCTransform.
+file.list <- list.files("PRX-TFAM-HIF1dPA/output/SoupX/processed_data/",
+                        pattern = "*_SoupX.rds")
+
+sc.list = list()
+for (i in 1:length(file.list)){
+  sample.name <- file.list[i]
+  print(sample.name)
+  sc <- readRDS(paste0(soupxpath, sample.name))
+  sc.list[[i]] <- sc
+}
+
+sc.list
+sc.list.names <- gsub("_SoupX.rds", "", file.list)
+
+```
+
+```{r DoubletFinder prep}
+
+# Get rates for DoubletFinder
+# FIND doublets using DoubletFinder 
+# https://github.com/chris-mcginnis-ucsf/DoubletFinder
+# https://rpubs.com/kenneditodd/doublet_finder_example
+
+# cell_number_tbl
+# # A tibble: 4 × 2
+#   project.name                             num.cells
+#   <chr>                                       <dbl>
+# 1 PRXTFAMHIF1dPA_Control1        7101
+# 2 PRXTFAMHIF1dPA_Mutant1         7917
+# 3 PRXTFAMHIF1dPA_Control2      7095
+# 4 PRXTFAMHIF1dPA_Mutant2       5823
+
+# Number of cells for each sample and expected multiplet rate from doubletfinder documentation,
+# used to create list manually below
+
+# Multiplet rate (%)|# of Cells Loaded|# of Cells Recovered
+literaldata = "0.40%, 800, 500, 
+0.80%, 1,600, 1,000, 
+1.60%, 3,200, 2,000, 
+2.30%, 4,800, 3,000, 
+3.10%, 6,400, 4,000, 
+3.90%, 8,000, 5,000, 
+4.60%, 9,600, 6,000, 
+5.40%, 11,200, 7,000, 
+6.10%, 12,800, 8,000, 
+6.90%, 14,400, 9,000, 
+7.60%, 16,000, 10,000"
+
+lines <- gsub("(, )$", "", read_lines(literaldata))
+lines <- gsub("(,)", "", lines)
+
+mult_rate_tbl <- tibble(lines) %>%
+  separate(lines, into = c("mult_rate", "cells_loaded", "cells_recovered"), sep = " ") %>%
+  mutate(mult_rate_dec = as.numeric(gsub("%", "", mult_rate))/100)
+
+
+cell_number_tbl = tibble(project.name = sc.list.names,
+                             num.cells = c(0))
+
+for (seu_obj in sc.list){
+  
+  df <- tibble(project.name = seu_obj@project.name,
+               num.cells = dim(seu_obj@meta.data)[1])
+  
+  print(df$project.name)
+  print(paste0("Number of cells: ", df$num.cells))
+  
+  cell_number_tbl = cell_number_tbl %>%
+    mutate(num.cells = case_when(
+      project.name == df$project.name ~ as.numeric(df$num.cells),
+      TRUE ~ num.cells)
+    )
+}
+
+mult_rate_tbl
+cell_number_tbl
+
+# mult.rate.list must be in the same order as sc.list
+mult.rate.list <- c(0.054, 0.054, 0.054, 0.039) # CHANGE THIS FOR NEW SAMPLES
+
+
+```
+
+
+# INITIAL PROCESSING OF INDIVIDUAL SAMPLES
+```{r}
+
+
+# MUST run chunk above to create mouse cell cycle genes before proceeding
+# perform filtering for the list of seurat objects (four samples in the list)
+for(n in 1:length(sc.list)){
+  
+  # load the first seurat object in the list
+  sample <- sc.list[[n]]
+  sample@project.name <- sc.list.names[[n]]
+  levels(sample@meta.data$orig.ident) <- sc.list.names[[n]]
+  print(sample@project.name)
+  print(Sys.time())
+
+  # object will be named sample
+  # change identities to get a clear single plot (not by clusters)
+  sample <- SetIdent(sample, value = sample@meta.data$orig.ident)
+
+  # Initialize the seurat object using NormalizeData(), FindVariableFeatures(), ScaleData()
+  sample <- PercentageFeatureSet(sample, "^mt-", col.name = "percent_mito")
+  
+  # sample  <- SCTransform(sample, method = "glmGamPoi")
+  sample <- NormalizeData(sample, normalization.method = "LogNormalize", scale.factor = 10000)
+  sample <- FindVariableFeatures(sample, selection.method = "vst", nfeatures = 2000) # nfeatures default is 2000
+  sample <- ScaleData(sample, features = rownames(sample))
+  
+  # Linear dimensional reduction
+  sample <- RunPCA(sample)
+  
+  # Non-linear dimensional reduction
+  sample <- RunUMAP(sample, dim = 1:50) # defaults dims is 1:50
+  
+  # Clustering
+  sample <- FindNeighbors(object = sample, dims = 1:50) # default dims is 1:10
+  sample <- FindClusters(object = sample, resolution = 0.8)
+
+  
+  # PLOTTING
+  # Plot original features, etc.
+  pdf(file = paste0(filepath, "PDFs_", version, "/Seurat_QC_Doublet_PDFs_", version, "/",
+                    sample@project.name, "_seurat_QC_", version, ".pdf"), width = 12, height = 10)
+  
+  # QC plots
+  print(VlnPlot(sample, group.by = "seurat_clusters",
+                features = c("nFeature_RNA", "nCount_RNA", "percent_mito"), pt.size = 0.1, ncol = 3) +
+          NoLegend() +
+          labs(caption=paste(sample@project.name, "Original")))
+  
+  print(FeatureScatter(sample, "nCount_RNA", "nFeature_RNA", group.by = "seurat_clusters", pt.size = 0.5) +
+          labs(tag=paste(sample@project.name, "Original")))
+  
+  # Default slot for plots is "data" which is the normalized data and is correct
+  print(DimPlot(sample, group.by = "seurat_clusters", label=TRUE, label.size = 6) +
+          ggtitle(paste(sample@project.name, "Original Clustering"))) 
+  
+  # Do the cell cycle scoring; Need to have already ran previous chunk to get m.s.genes and m.g2m.genes
+  sample <- CellCycleScoring(sample, s.features = m.s.genes, g2m.features = m.g2m.genes, set.ident = TRUE)
+  
+  # Can uncomment these lines to view the cell cycle as PCA but need to make sure that
+  # PCA is re-done with normal features afterwards before moving on to the rest of the filtering/analysis.
+  # sample <- RunPCA(object = sample, features = c(m.s.genes, m.g2m.genes), approx=FALSE)
+  # print(PCAPlot(sample) + ggtitle(paste(sample@project.name, "Cell Cycle Scoring")))
+  
+  # sample <- RunPCA(sample)
+  
+  # plot cell cycle scores
+  print(VlnPlot(sample, features = c("S.Score", "G2M.Score"),
+                group.by = "seurat_clusters", ncol = 2, pt.size = 0.1) +
+          labs(caption = sample@project.name))
+  
+  print(DimPlot(sample) + ggtitle(paste(sample@project.name, "Cell Cycle Scoring")))
+
+  mult.rate <- mult.rate.list[[n]]
+  nExp <- round(ncol(sample) * mult.rate)
+  sample <- doubletFinder_v3(sample, pN = 0.25, pK = 0.09, nExp = nExp, PCs = 1:10, sct = TRUE)
+  DF.name = colnames(sample@meta.data)[grepl("DF.classification", colnames(sample@meta.data))]
+
+  # plot results from DoubletFinder
+  # Idents are previously set to cell cycle scores so need to change them back to clusters
+  sample <- SetIdent(sample, value = sample@meta.data$seurat_clusters)
+  
+  print(
+    VlnPlot(sample, features = "nFeature_RNA", group.by = DF.name, pt.size = 0.1) +
+      ggtitle(paste(sample@project.name, "nFeatures, DoubletFinder, post-SoupX")) +
+      theme(title = element_text(size = 12)))
+        
+  print(
+    VlnPlot(sample, features = "nFeature_RNA", group.by = "seurat_clusters", split.by = DF.name, pt.size = 0.1) +
+      ggtitle(paste(sample@project.name, "nFeatures, DoubletFinder, post-SoupX")) +
+      labs(caption = "Groups with fewer than two data points have been dropped"))
+  
+  print(cowplot::plot_grid(ncol = 2,
+                           DimPlot(object = sample, reduction = "umap", label = TRUE, label.size = 6) + NoAxes() +
+                             ggtitle(paste(sample@project.name, "post SoupX")) +
+                             theme(title = element_text(size = 10)),
+                           DimPlot(sample, group.by = DF.name, label = FALSE) + NoAxes() +
+                             ggtitle(paste(sample@project.name, "Doublet Finder")) +
+                             theme(title = element_text(size = 10))))
+  
+  print(cowplot::plot_grid(ncol = 1,
+                           DimPlot(sample, group.by = "seurat_clusters", split.by = DF.name, label = TRUE, label.size = 4.5) + NoAxes() +
+                             ggtitle(paste(sample@project.name, "clusters, post-SoupX, Doublet Finder")) +
+                             theme(title = element_text(size = 12))))
+  
+  dev.off()
+  
+    
+  # V3 - DOUBLETS REMOVED
+  # filter out only for singlets
+  sample.filt = sample[, sample@meta.data[, DF.name] == "Singlet"]
+  dim(sample.filt)
+  
+  ## FILTER THE SAMPLE
+  # MITO CONTENT FILTERING FOR CELLS
+  # Filter out cells with > 15% percent mitochondiral genes
+  sample.filt <- subset(sample.filt, subset = percent_mito < 15) # change to sample (doublets not removed) or sample.filt (doublets removed)
+  
+  # FILTER FOR NUMBER OF FEATURES PER CELL
+  sample.filt <- subset(sample.filt, subset = nFeature_RNA > 200) # change to sample (doublets not removed) or sample.filt (doublets removed)
+  
+  pdf(file=paste0(filepath, "PDFs_", version, "/Seurat_QC_Doublet_PDFs_", version, "/", sample@project.name, "_seurat_POST-QC_", version, ".pdf"), width = 12, height = 10)
+  
+  # get clusters for each single sample
+  sample.filt <- FindNeighbors(object = sample.filt, dims = 1:50) # default dims is 1:10
+  sample.filt <- FindClusters(object = sample.filt, resolution = 0.8)
+
+  # Do final plots for each sample
+  print(VlnPlot(sample.filt, group.by = "seurat_clusters", features = c("nFeature_RNA", "nCount_RNA", "percent_mito"), pt.size = 0.1, ncol = 3) + NoLegend() +
+          labs(caption=paste(sample.filt@project.name, "post SoupX / DoubletFinder / Filtered for cells mito < 15% and features > 200")))
+                            
+  print(FeatureScatter(sample.filt, "nCount_RNA", "nFeature_RNA", group.by = "seurat_clusters", pt.size = 0.5) +
+          ggtitle(paste(sample.filt@project.name, "post SoupX / DoubletFinder / Filtered for cells mito < 15% and features > 200"))  +
+          theme(title = element_text(size = 10))
+        )
+  
+  #more plots: this for umap for all clusters.
+  print(DimPlot(object = sample.filt , group.by = "seurat_clusters", label=TRUE, label.size = 6, reduction = "umap") +
+          labs(title = paste(sample.filt@project.name, "post SoupX / DoubletFinder / Filtered for cells mito < 15% and features > 200"), subtitle = "Resolution = 0.8") +
+          theme(title = element_text(size = 10))
+        )
+  
+  # save seurat project back into list
+  sc.list[[n]] <- sample.filt
+  names(sc.list)[[n]]<-sample.filt@project.name
+  
+  dev.off()
+
+}
+
+# Save list of Seurat objects
+saveRDS(sc.list, file = paste0(filepath, "RDS_", version, "/", "Seurat_list_combined_postSoupX_DF_mito15_features200_", version, ".rds"))
+
+
+# remove some objects from the environment
+rm(sample)
+rm(sample.filt)
+
+
+```
+
+
+# INTEGRATE DATA
+```{r Integrate Data}
+
+# Save list of Seurat objects
+sc.list = readRDS(file = paste0(filepath, "RDS_", version, "/", "Seurat_list_combined_postSoupX_DF_mito15_features200_", version, ".rds"))
+
+# Original integration code:
+# # normalize and identify variable features for each dataset independently if not done already
+# sc.list <- lapply(X = sc.list, FUN = function(x) {
+#     x <- NormalizeData(x)
+#     x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 2000)
+# })
+
+# select features that are repeatedly variable across datasets for integration
+# This function ranks features by the number of datasets they are deemed variable in,
+# breaking ties by the median variable feature rank across datasets.
+# It returns the top scoring features by this ranking.
+features <- SelectIntegrationFeatures(object.list = sc.list)
+
+# Identify anchors using the FindIntegrationAnchors() function, which takes a list of Seurat objects as input,
+# and use these anchors to integrate the datasets together with IntegrateData()
+anchors <- FindIntegrationAnchors(object.list = sc.list, anchor.features = features)
+saveRDS(anchors, file = paste0(filepath, "RDS_", version, "/", "reference_pca_anchors_pre_integration_Seurat_", version, ".rds"))
+
+# this command creates an 'integrated' data assay
+sc.integrated <- IntegrateData(anchorset = anchors)
+
+# specify that we will perform downstream analysis on the corrected data; note that the original unmodified data still resides in the 'RNA' assay
+DefaultAssay(sc.integrated) <- "integrated"
+
+# perform integrated analysis
+sc.integrated <- ScaleData(sc.integrated)
+sc.integrated <- RunPCA(sc.integrated, verbose = FALSE)
+sc.integrated <- RunUMAP(sc.integrated, reduction = "pca", dims = 1:50)
+
+# cluster the cells
+sc.integrated <- FindNeighbors(sc.integrated, reduction = "pca", dims = 1:50) #base dimensions on previous elbow plot, lean towards higher side
+
+
+# Add metadata a
+# Use mgsub to add new metadata column (https://github.com/cran/mgsub)
+sc.list.names
+
+
+shortname_metadata <- mgsub::mgsub(string = sc.integrated@meta.data$orig.ident,
+                                   pattern = c("PRXTFAMHIF1dPA_Control1", # Control-1
+                                               "PRXTFAMHIF1dPA_Mutant1", # Mutant-1
+                                               "PRXTFAMHIF1dPA_Control2", # Control-2
+                                               "PRXTFAMHIF1dPA_Mutant2"), # Mutant-2
+                                   replacement = c("Control-1",
+                                                   "Mutant-1",
+                                                   "Control-2",
+                                                   "Mutant-2"))
+
+sc.integrated <- AddMetaData(object = sc.integrated, shortname_metadata, col.name = "Sample")
+
+
+group_metadata <- mgsub::mgsub(string = sc.integrated@meta.data$orig.ident,
+                               pattern = c("PRXTFAMHIF1dPA_Control1",
+                                           "PRXTFAMHIF1dPA_Mutant1",
+                                           "PRXTFAMHIF1dPA_Control2",
+                                           "PRXTFAMHIF1dPA_Mutant2"),
+                               replacement = c("Control", "Mutant", "Control", "Mutant"))
+
+sc.integrated <- AddMetaData(object = sc.integrated, group_metadata, col.name = "Group")
+
+DimPlot(sc.integrated, split.by = "orig.ident")
+DimPlot(sc.integrated, split.by = "Sample")
+
+# re-save integrated object with new metadata
+write.table(sc.integrated@meta.data, file = paste0(filepath, "metadata_integrated_", version, ".txt"), sep="\t")
+
+saveRDS(sc.integrated, file = paste(filepath, "RDS_", version, "/", "Periosteal_Sch_integrated_SoupX_Seurat_wMetadata_", version, ".rds", sep=""))
+
+```
+
+# CLUSTER AT DIFFERENT RESOLUTIONS (V1)
+```{r}
+
+sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_Sch_integrated_SoupX_Seurat_wMetadata_", version, ".rds", sep=""))
+
+# Run for different resolutions of clustering
+res_levels <- c(0.8, 0.2, 0.1)
+
+for (i in res_levels){
+  
+  # Find clusters at the specified resolution
+  sc.integrated <- FindClusters(sc.integrated, resolution = i) # trying to get 6-7 clusters
+  
+  # save the integrated object
+  print("Writing RDS.")
+  saveRDS(sc.integrated, file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", i, ".rds", sep=""))
+  
+  
+  
+  # PDF FILE OF A DIMPLOT AT SPECIFIED RESOLUTION
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlot_clusters_", version, "_", i, "res.pdf"), width=11, height=8.5)
+  
+  print(DimPlot(sc.integrated, label = TRUE) +
+          ggtitle(paste0("Resolution = ", i))
+  )
+  
+  dev.off()
+  
+
+  
+  # Create UMAP plots
+  pdf(file = paste0(filepath,"PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+  
+  # by cluster (integrated)
+  print(
+    DimPlot(sc.integrated, reduction = "umap", label = TRUE, label.size = 6, repel = FALSE) +
+      ggtitle(paste0("Resolution = ", i))
+    )
+  
+  # plot by sample
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Sample")
+    )
+  
+  # split by sample
+  print(
+    DimPlot(sc.integrated, split.by = 'Sample', ncol = 2)
+    )
+  
+  # by condition
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Group")
+    )
+  
+  # split by group
+  print(
+    DimPlot(sc.integrated, split.by = 'Group', raster = FALSE, label = TRUE, label.size = 5)
+    )
+  
+  dev.off()
+  
+  
+  # create violin/feature plots 
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+  
+  print(
+    VlnPlot(sc.integrated,
+            group.by = "seurat_clusters",
+            features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+            pt.size = 0.1, ncol = 3) +
+      NoLegend() +
+      labs(caption = paste0("Integrated, res ", i))
+    )
+  
+  sc.integrated <- CellCycleScoring(object = sc.integrated, g2m.features = m.g2m.genes, s.features = m.s.genes)
+  
+  print(
+    VlnPlot(sc.integrated,
+            features = c("S.Score", "G2M.Score"),
+            group.by = "seurat_clusters",
+            ncol = 2, pt.size = 0.1) +
+      labs(caption = paste0("Integrated, res ", i)))
+  
+  dev.off()
+  
+  
+  
+
+  # Make barplots that show the percentage/counts of cells from each SAMPLE in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Sample_Barplots_", version, "_res", i, ".pdf")),
+       width = 8, height = 10)
+  
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = percent, fill = seurat_clusters)) +
+    geom_col() + xlab("Sample") +
+    ggtitle(paste0("Percentage of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_percents
+  
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") + xlab("Sample") +
+    ggtitle(paste0("Number of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_numbers
+  
+  print(cluster_percents)
+  print(cluster_numbers)
+  
+  dev.off()
+  
+  cluster_count_sample <- sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  write.csv(cluster_count_sample, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Sample_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+  
+  
+  # Make barplots that show the percentage/counts of cells from each GROUP in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Group_Barplots_", version, "_res", i, ".pdf")),
+      width = 8, height = 10)
+  
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = percent, fill = seurat_clusters)) +
+    geom_col() +
+    ggtitle(paste0("Percentage of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_percents
+  
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") +
+    ggtitle(paste0("Number of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_numbers
+  
+  print(group_cluster_percents)
+  print(group_cluster_numbers)
+    
+  dev.off()
+  
+  cluster_count_group <- sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  write.csv(cluster_count_group, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Group_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+
+
+}
+
+
+```
+
+
+# V3 CHANGES START HERE
+
+## Load the resolution 0.1 object. from V2, subset, and recluster
+
+``` {r Subclustering based on integrated clustering identities}
+
+# Load in the Resolution 0.1 object from the V2 analysis
+sc.integrated = readRDS(file = paste0(filepath, "RDS_", load_version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", load_version, "_res", "0.1", ".rds"))
+
+
+# SUBSETTING TO REMOVE CLUSTERS 3 AND 6 from V2
+# Subset the cells to only include cluster(s) of interest
+Idents(sc.integrated) <- "seurat_clusters"
+sc.integrated <- subset(sc.integrated, idents = c(0, 1, 2, 4, 5, 7))
+
+# Set integrated assay
+DefaultAssay(sc.integrated) <- "integrated"
+
+# Run PCA on the integrated assay using the new set of variable features
+sc.integrated <- RunPCA(sc.integrated, verbose = FALSE)
+sc.integrated <- RunUMAP(sc.integrated, reduction = "pca", dims = 1:50)
+
+# Run FindNeighbors and FindClusters using the new PC dimensions
+sc.integrated <- FindNeighbors(sc.integrated, reduction = "pca", dims = 1:50)
+
+
+# Run for different resolutions of clustering
+res_levels <- c(0.1, 0.2, 0.8)
+
+for (i in res_levels){
+  
+  # Find clusters at the specified resolution
+  sc.integrated <- FindClusters(sc.integrated, resolution = i) # trying to get 6-7 clusters
+  
+  # save the integrated object
+  print("Writing RDS.")
+  saveRDS(sc.integrated, file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", i, ".rds", sep=""))
+  
+  
+  
+  # PDF FILE OF A DIMPLOT AT SPECIFIED RESOLUTION
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlot_clusters_", version, "_", i, "res.pdf"), width=11, height=8.5)
+  
+  print(DimPlot(sc.integrated, label = TRUE) +
+          ggtitle(paste0("Resolution = ", i))
+  )
+  
+  dev.off()
+  
+
+  
+  # Create UMAP plots
+  pdf(file = paste0(filepath,"PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+  
+  # by cluster (integrated)
+  print(
+    DimPlot(sc.integrated, reduction = "umap", label = TRUE, label.size = 6, repel = FALSE) +
+      ggtitle(paste0("Resolution = ", i))
+    )
+  
+  # plot by sample
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Sample")
+    )
+  
+  # split by sample
+  print(
+    DimPlot(sc.integrated, split.by = 'Sample', ncol = 2)
+    )
+  
+  # by condition
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Group")
+    )
+  
+  # split by group
+  print(
+    DimPlot(sc.integrated, split.by = 'Group', raster = FALSE, label = TRUE, label.size = 5)
+    )
+  
+  dev.off()
+  
+  
+  # create violin/feature plots 
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+  
+  print(
+    VlnPlot(sc.integrated,
+            group.by = "seurat_clusters",
+            features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+            pt.size = 0.1, ncol = 3) +
+      NoLegend() +
+      labs(caption = paste0("Integrated, res ", i))
+    )
+  
+  sc.integrated <- CellCycleScoring(object = sc.integrated, g2m.features = m.g2m.genes, s.features = m.s.genes)
+  
+  print(
+    VlnPlot(sc.integrated,
+            features = c("S.Score", "G2M.Score"),
+            group.by = "seurat_clusters",
+            ncol = 2, pt.size = 0.1) +
+      labs(caption = paste0("Integrated, res ", i)))
+  
+  dev.off()
+  
+  
+  
+
+  # Make barplots that show the percentage/counts of cells from each SAMPLE in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Sample_Barplots_", version, "_res", i, ".pdf")),
+       width = 8, height = 10)
+  
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = percent, fill = seurat_clusters)) +
+    geom_col() + xlab("Sample") +
+    ggtitle(paste0("Percentage of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_percents
+  
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") + xlab("Sample") +
+    ggtitle(paste0("Number of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_numbers
+  
+  print(cluster_percents)
+  print(cluster_numbers)
+  
+  dev.off()
+  
+  cluster_count_sample <- sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  write.csv(cluster_count_sample, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Sample_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+  
+  
+  # Make barplots that show the percentage/counts of cells from each GROUP in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Group_Barplots_", version, "_res", i, ".pdf")),
+      width = 8, height = 10)
+  
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = percent, fill = seurat_clusters)) +
+    geom_col() +
+    ggtitle(paste0("Percentage of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_percents
+  
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") +
+    ggtitle(paste0("Number of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_numbers
+  
+  print(group_cluster_percents)
+  print(group_cluster_numbers)
+    
+  dev.off()
+  
+  cluster_count_group <- sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  write.csv(cluster_count_group, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Group_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+
+
+}
+
+
+```
+
+
+
+```{r Interested markers and conserved cell type markers}
+
+# load integrated seurat object if needed
+sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", "0.1", ".rds", sep=""))
+
+# Changed the default assay to RNA-- From Dana's script, this was set to integrated which I'm not sure is right?
+DefaultAssay(sc.integrated) <- "RNA"
+Idents(object = sc.integrated) <- "seurat_clusters"
+
+# find and export markers for every cluster compared to all remaining cells
+markers.sc.integrated <- FindAllMarkers(sc.integrated, assay ="RNA")
+
+# using integrated data, find all markers for each integrated cluster (includes all conditions) across all other integrated (all conditions) clusters.
+write.csv(markers.sc.integrated, file = paste0(filepath, "dataframes_", version, "/Integrated_Seurat_ClusterMarkers_", version, ".csv", sep=""), quote = FALSE)
+
+# Plot heatmap of marker genes between clusters in integrated data (across both groups)
+# PDF width > height version (plotted with different pdf dimensions for visibility)
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_Cluster_Markers_heatmap_", version, ".pdf"), width=20, height=16)
+DefaultAssay(sc.integrated) <- "integrated"
+markers.sc.integrated %>%
+    group_by(cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10 # 'top 10' for each cluster
+print(DoHeatmap(sc.integrated, size = 5, features = unique(top10$gene)) + NoLegend() + theme(axis.text = element_text(size = 8, face = "bold")))
+dev.off()
+
+# # PDF width < height version (plotted with different pdf dimensions for visibility)
+# pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_Cluster_Markers_heatmap_", version, "-1.pdf"), width=16, height=20)
+# markers.sc.integrated %>%
+#     group_by(cluster) %>%
+#     top_n(n = 10, wt = avg_log2FC) -> top10 # 'top 10' for each cluster
+# print(DoHeatmap(sc.integrated, size = 5, features = unique(top10$gene)) + NoLegend() + theme(axis.text = element_text(size = 10, face = "bold")))
+# dev.off()
+
+# Dot plots of cluster marker genes split by cluster only (so across both groups)
+# The size of the dot corresponds to the percentage of cells expressing the feature in each cluster. The color represents the average expression level
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_Cluster_Markers_dotplot_", version, ".pdf"), width=22, height=12)
+print(DotPlot(sc.integrated, features = unique(top10$gene)) + RotatedAxis() + theme(axis.text = element_text(size = 7, face = "bold")))
+dev.off()
+
+# Dot plots of cluster marker genes split by cluster AND condition
+# The size of the dot corresponds to the percentage of cells expressing the feature in each cluster. The color represents the average expression level
+pdf(file=paste(filepath,"PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_Cluster_Markers_dotplot_groups_", version, ".pdf" ,sep=""), width=22, height=12)
+print(DotPlot(sc.integrated, features = unique(top10$gene), split.by = "Group", cols = c("red", "blue")) + RotatedAxis() + theme(axis.text = element_text(size = 7, face = "bold")))
+dev.off()
+
+
+# NOTES
+# FindMarkers will find markers between two different identity groups - you have to specify both identity groups. This is useful for comparing the differences between two specific groups.
+
+# FindAllMarkers will find markers differentially expressed in each identity group by comparing it to all of the others - you don't have to manually define anything. Note that markers may bleed over between closely-related groups - they are not forced to be specific to only one group. This is what most people use (and likely what you want).
+
+# FindConservedMarkers will find markers that are conserved between two groups - this can be useful if you want to find markers that are conserved between a treated and untreated condition for a specific cell type or group of cells. It means they are differentially expressed compared to other groups, but have similar expression between the two groups you're actually comparing.
+
+#You should use the integrated assay when trying to 'align' cell states that are shared across datasets (i.e. for clustering, visualization, learning pseudotime, etc.).  You should use the RNA assay when exploring the genes that change either across clusters, trajectories, or conditions.
+
+```
+
+
+Additional figures:
+ 
+Violin Plots for Cluster 1 and Cluster 3 for:
+Hk2
+Pfkl
+Pfkp
+Gapdh
+Ldha
+Aldoa
+Pgk1
+Pgam1
+Gpi1
+Vegf
+Bnip3
+P4ha1
+ 
+Feature Plot by group for P4ha1
+
+
+```{r Extract out custom markers}
+# Extract out custom markers
+
+# load integrated seurat object if needed
+sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", "0.1", ".rds", sep=""))
+
+# read in file of marker genes
+# markers.raw <- read.csv(file = paste0(basedir, "metadata/marker_genes_V3.txt"), header = TRUE)
+additional.markers <- read.csv(file = paste0(basedir, "metadata/marker_genes_additional_V3.txt"), header = TRUE)
+
+# markerset <- markers.raw$marker_genes %>% sort() %>% unique()
+markerset <- additional.markers$marker_genes %>% sort() %>% unique()
+
+
+# create pdfs - each file is a single marker gene feature plot
+DefaultAssay(sc.integrated) <- "RNA"
+
+# Create feature plots for each marker gene across all conditions (single DimPlot)
+nmarkers <- length(markerset)
+for(i in 1:nmarkers){  
+  geneid=markerset[i]
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Marker_FeatPlots_", version, "/Marker_FeatPlot_", geneid, "_", version, ".pdf"), width=8, height=8)
+  print(FeaturePlot(sc.integrated, pt.size=0.3, features = geneid, label=T, label.size = 5,  by.col=TRUE, order=TRUE, raster=FALSE)) #split.by='Group',
+  dev.off()
+}
+
+# create pdfs - each file is a single marker gene feature plot SPLIT BY GROUP
+DefaultAssay(sc.integrated) <- "RNA"
+nmarkers <- length(markerset)
+for(i in 1:nmarkers){  
+  geneid=markerset[i]
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Marker_FeatPlots_", version, "/Marker_FeatPlot_", geneid, "_byGroup_", version, ".pdf"), width=16, height=8)
+  print(FeaturePlot(sc.integrated, pt.size=0.3, features = geneid, label=T, label.size = 3,  by.col=TRUE, order=TRUE, raster=FALSE, split.by='Group'))
+  dev.off()
+}
+
+# Dot plots of custom markers grouped by their clusters and split between Mutant and Control
+# The size of the dot corresponds to the percentage of cells expressing the feature in each cluster. The color represents the average expression level
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_CustomMarkers_dotplot_", version, ".pdf"), width=18, height=10)
+DotPlot(sc.integrated, features = markerset, group.by = "seurat_clusters", split.by = "Group", cols = c("red", "blue")) + RotatedAxis()
+dev.off()
+
+
+# DotPlot(sc.integrated, features = markerset_mito$V1, group.by = "seurat_clusters", split.by = "Group", cols = c("red", "blue")) + RotatedAxis()
+# DotPlot(sc.integrated, features = markerset, group.by = "seurat_clusters") + RotatedAxis()
+
+
+# Violin plots of custom markers grouped by their clusters and split between Mutant and Control
+# Makes a single HUGE PDF. Not practical for a lot of markers.
+# Idents(object = sc.integrated) <- "seurat_clusters"
+# pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Marker_VlnPlots_", version, "/Integrated_Seurat_intrst_markers_vlnplot_", version, ".pdf"), width=18, height=60)
+# VlnPlot(sc.integrated, features = markerset, group.by = "seurat_clusters", split.by = "Group", ncol = 1, assay="RNA")
+# dev.off()
+
+Idents(object = sc.integrated) <- "seurat_clusters"
+nmarkers <- length(markerset)
+for(i in 1:nmarkers){
+  geneid = markerset[i]
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Marker_VlnPlots_", version, "/Marker_VlnPlot_", geneid, "_", version, ".pdf"), width=11, height=8.5)
+  print(VlnPlot(sc.integrated, features = geneid, group.by = "seurat_clusters", split.by = "Group", ncol = 1, assay = "RNA"))
+  dev.off()
+}
+
+# CLUSTERS 1 and 3 only for the "additional.markers"
+Idents(object = sc.integrated) <- "seurat_clusters"
+nmarkers <- length(markerset)
+for(i in 1:nmarkers){
+  geneid = markerset[i]
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Marker_VlnPlots_", version, "/Marker_VlnPlot_", geneid, "_", "Clusters1and3", "_", version, ".pdf"), width=11, height=8.5)
+  print(VlnPlot(sc.integrated, idents = c("1", "3"), features = geneid, group.by = "seurat_clusters", split.by = "Group", ncol = 1, assay = "RNA"))
+  dev.off()
+}
+
+
+```
+
+
+```{r diff expression}
+
+# load integrated seurat object if needed
+ sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", "0.1", ".rds", sep=""))
+  
+
+DefaultAssay(sc.integrated) <- "RNA"
+Idents(object = sc.integrated) <- "Group"
+theme_set(theme_cowplot())
+
+# wilcox
+de.group.results<-data.frame("Marker"="","Cluster"="","p_val"=0,"avg_log2FC"=0,"pct.1"=0,"pct.2"=0,"p_val_adj"=0)
+
+for (n in 1:length(levels(sc.integrated@meta.data$seurat_clusters))){
+  c <- as.character(n-1)
+  print(paste("Cluster ", c, ":", "Finding markers...", sep=""))
+  c.sub <- subset(x = sc.integrated, subset = seurat_clusters == c)
+  # default assay of c.sub is RNA, leave as is because doing a comparison between groups
+  # Idents are currently "Group" (mutant and control) - leave as is
+  c.diff <- FindMarkers(c.sub, ident.1 = "Control", ident.2 = "Mutant")#, assay="SCT", recorrect_umi=FALSE)
+  DE.markerset <- rownames(c.diff[which(abs(c.diff$avg_log2FC)>0.48 & c.diff$p_val_adj<0.05), ])
+  
+  for(marker in DE.markerset){
+      myline=c("Marker"=marker, "Cluster"= c, unlist(c.diff[marker,]))
+      print(myline)
+      de.group.results<-rbind(de.group.results,myline)
+      #avgexp <- AverageExpression(sc_cluster, assay = "SCT", group.by="GroupAge")[[1]]
+      }
+}
+
+de.group.results = de.group.results[-1,]
+
+write.csv(de.group.results, file=paste0(filepath, "dataframes_", version, "/Integrated_DE_markers_all_", version, "_ctl-vs-mut_wilcox.csv"), row.names = FALSE)
+
+
+# t-test
+de.group.results.ttest <-data.frame("Marker"="","Cluster"="","p_val"=0,"avg_log2FC"=0,"pct.1"=0,"pct.2"=0,"p_val_adj"=0)
+
+for (n in 1:length(levels(sc.integrated@meta.data$seurat_clusters))){
+  c <- as.character(n-1)
+  print(paste("Cluster ", c, ":", "Finding markers...", sep=""))
+  c.sub <- subset(x = sc.integrated, subset = seurat_clusters == c)
+  # default assay of c.sub is RNA, leave as is because doing a comparison between groups
+  # Idents are currently "Group" (mutant and control) - leave as is
+  c.diff <- FindMarkers(c.sub, ident.1 = "Control", ident.2 = "Mutant", test.use = "t")#, assay="SCT", recorrect_umi=FALSE)
+  DE.markerset <- rownames(c.diff[which(abs(c.diff$avg_log2FC)>0.48 & c.diff$p_val_adj<0.05), ])
+  
+  for(marker in DE.markerset){
+      myline=c("Marker"=marker, "Cluster"= c, unlist(c.diff[marker,]))
+      print(myline)
+      de.group.results.ttest<-rbind(de.group.results.ttest,myline)
+      #avgexp <- AverageExpression(sc_cluster, assay = "SCT", group.by="GroupAge")[[1]]
+      }
+  
+  de.group.results.ttest = de.group.results.ttest[-1,]
+}
+
+de.group.results.ttest = de.group.results.ttest[-1,]
+write.csv(de.group.results.ttest, file=paste0(filepath, "dataframes_", version, "/Integrated_DE_markers_all_", version, "_ctl-vs-mut_ttest.csv"), row.names = FALSE)
+
+
+# Dot plot of deferentially expressed genes by cluster and group
+de.group.results %>%
+    group_by(Cluster) %>%
+    top_n(n = 10, wt = avg_log2FC) -> top10DE
+
+DefaultAssay(sc.integrated) <- "RNA"
+Idents(object = sc.integrated) <- "seurat_clusters"
+
+pdf(file=paste0(filepath,"PDFs_", version, "/Seurat_DE_PDFs_", version, "/Integrated_Seurat_top10_DE_genes_dotplot.pdf"), width=20, height=10)
+DotPlot(sc.integrated, features = unique(top10DE$Marker), group.by = "seurat_clusters", split.by = "Group", cols = c("red", "blue")) + RotatedAxis()
+dev.off()
+
+
+# Dot plot of deferentially expressed genes by cluster and group
+de.group.results %>%
+    group_by(Cluster) %>%
+    top_n(n = 20, wt = avg_log2FC) -> top20DE
+
+DefaultAssay(sc.integrated) <- "RNA"
+Idents(object = sc.integrated) <- "seurat_clusters"
+
+pdf(file=paste0(filepath,"PDFs_", version, "/Seurat_DE_PDFs_", version, "/Integrated_Seurat_top20_DE_genes_dotplot.pdf"), width=20, height=10)
+DotPlot(sc.integrated, features = unique(top20DE$Marker), group.by = "seurat_clusters", split.by = "Group", cols = c("red", "blue")) + RotatedAxis()
+dev.off()
+
+
+# scatter plot of differential expression
+Idents(sc.integrated) <- "Group"
+# subset cells from one cluster
+# t.cells <- subset(immune.combined, idents = "CD4 Naive T")
+
+# Calculate average expression
+avg <- as.data.frame( log1p(AverageExpression(sc.integrated, verbose = FALSE)$RNA) )
+avg$gene <- rownames(avg)
+
+# scatterplot of mutant vs control
+pdf(file=paste0(filepath,"PDFs_", version, "/Seurat_DE_PDFs_", version, "/Integrated_Seurat_DE_genes_scatterplot.pdf"), width=18, height=10)
+genes.to.label = markerset
+p <- ggplot(avg, aes(Control, Mutant)) + geom_point() + ggtitle("Average Gene Expression in Mutant vs. Control")
+p <- LabelPoints(plot = p, points = genes.to.label, repel = TRUE, max.overlaps = 50, color = "red")
+print(p)
+dev.off()
+
+
+
+```
+
+```{r Cluster marker plotting with feature plot and Nebulosa}
+
+# load integrated seurat object if needed
+ sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", "0.1", ".rds", sep=""))
+  
+
+
+# ------ Feature Plots ------
+
+# Create feature plots for potential cluster marker gene groups across all conditions
+DefaultAssay(sc.integrated) <- "RNA"
+# Select genes of interest (using sample() here for demonstration purposes)
+gene.set <- c("Prrx1", "Thy1", "Pdgrfa", "Sca1")
+# Get mean expression of genes of interest per cell
+gene.set.exp <- colMeans(x = sc.integrated@assays$RNA@data[gene.set, ], na.rm = TRUE)
+# Add mean expression values in 'sc.integrated@meta.data$gene.set.score'
+if (all(names(x = gene.set.exp) == rownames(x = sc.integrated@meta.data))) {
+  cat("Cell names order match in 'gene.set.exp' and 'sc.integrated@meta.data':\n", 
+      "adding gene set mean expression values in 'sc.integrated@meta.data$gene.set.score'")
+  sc.integrated@meta.data$gene.set.score <- gene.set.exp
+}
+# Plot mean expression using Seurat::FeaturePlot()
+FeaturePlot(object = sc.integrated, features = "gene.set.score")
+
+
+
+# ----- Feature plot wit Nebulosa -----
+
+library(Nebulosa)
+
+DefaultAssay(sc.integrated) <- "RNA"
+
+###### Bglap, Alpl #########
+# genes to plot
+genes = c("Bglap", "Alpl")
+
+# Plotting all of the plots individually
+pdf(file = paste0(filepath, "PDFs_", version, "/Nebulosa_Plots_", version, "/", "Nebulosa_AllDensityPlots_", paste0(genes, collapse = "+"), "_", version, ".pdf"),
+    width=10, height=10)
+plot_density(sc.integrated,
+             features = genes, 
+             joint = TRUE, combine = FALSE)
+dev.off()
+
+# Plotting joint density plots with UMAP of clusters
+pdf(file = paste0(filepath, "PDFs_", version, "/Nebulosa_Plots_", version, "/", "Nebulosa_JointDensity-wClusters_", paste0(genes, collapse = "+"), "_", version, ".pdf"),
+    width=8.5, height=15)
+plot_1 = plot_density(sc.integrated,
+                      features = genes,
+                      joint = TRUE, combine = FALSE)
+plot_1[[3]] / DimPlot(sc.integrated, label = TRUE, repel = TRUE, group.by = "seurat_clusters")
+dev.off()
+
+
+
+###### Prrx1, Thy1, Pdgfra, Ly6a #########
+# genes to plot
+genes = c("Prrx1", "Thy1", "Pdgfra", "Ly6a")
+
+# Plotting all of the plots individually
+pdf(file = paste0(filepath, "PDFs_", version, "/Nebulosa_Plots_", version, "/", "Nebulosa_AllDensityPlots_", paste0(genes, collapse = "+"), "_", version, ".pdf"),
+    width=10, height=10)
+plot_density(sc.integrated,
+             features = genes, 
+             joint = TRUE, combine = FALSE)
+dev.off()
+
+# Plotting joint density plots with UMAP of clusters
+pdf(file = paste0(filepath, "PDFs_", version, "/Nebulosa_Plots_", version, "/", "Nebulosa_JointDensity-wClusters_", paste0(genes, collapse = "+"), "_", version, ".pdf"),
+    width=8.5, height=15)
+plot_1 = plot_density(sc.integrated,
+                      features = genes,
+                      joint = TRUE, combine = FALSE)
+plot_1[[4]] / DimPlot(sc.integrated, label = TRUE, repel = TRUE, group.by = "seurat_clusters")
+dev.off()
+
+
+
+
+
+```
+
+
+```{r Additional plots}
+
+
+# Violin plots for the following genes, CLUSTERS 1 and 3 ONLY
+
+# load integrated seurat object if needed
+ sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", "0.1", ".rds", sep=""))
+
+# Subset seurat onject to be clusters 1 and 3 only
+cluster_to_subset = c(1)
+Idents(sc.integrated) <- "seurat_clusters"
+sc.integrated.subset <- subset(sc.integrated, idents = cluster_to_subset)
+DimPlot(sc.integrated)
+DimPlot(sc.integrated.subset)
+DefaultAssay(sc.integrated.subset) <- "RNA"
+
+
+features = read.csv(file = paste0(basedir, "metadata/marker_genes_additional_V3.txt"), header = TRUE) %>% pull(marker_genes)
+
+for (gene in features){
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                    paste0(gene, collapse = "_"), "_SinglePlot_", version, ".pdf"), width=10, height=10)
+  print(VlnPlot(sc.integrated.subset, features = gene, group.by = "Group", cols = c("#F56D66", "#137D86")) +
+          labs(caption = paste0("Cluster ", cluster_to_subset)) + 
+          theme(plot.caption.position = "plot", plot.caption = element_text(hjust = 1, size = 20)))
+  dev.off()
+}
+
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                  paste0(features, collapse = "_"), "_TiledPlots_", version, ".pdf"), width=12, height=12)
+VlnPlot(sc.integrated.subset, features = features, combine = TRUE, group.by = "Group", 
+        same.y.lims = FALSE, split.plot = FALSE, cols = c("#F56D66", "#137D86")) + labs(caption = paste0("Cluster ", cluster_to_subset)) + theme(plot.caption.position = "plot",
+        plot.caption = element_text(hjust = 1, size = 20))
+VlnPlot(sc.integrated.subset, features = features, combine = TRUE, group.by = "Group",
+        same.y.lims = TRUE, split.plot = FALSE, cols = c("#F56D66", "#137D86")) + labs(caption = paste0("Cluster ", cluster_to_subset)) + theme(plot.caption.position = "plot",
+        plot.caption = element_text(hjust = 1, size = 20))
+dev.off()
+
+
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                  paste0(features, collapse = "_"), "_CombinedPlot_", version, ".pdf"), width=6, height=12)
+VlnPlot(sc.integrated.subset, features = features, combine = TRUE, split.by = "Group",
+        stack = TRUE, flip = TRUE, same.y.lims = TRUE, cols = c("#F56D66", "#137D86")) + NoLegend() + labs(title = paste0("Cluster ", cluster_to_subset))
+dev.off()
+
+
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                  paste0(features, collapse = "_"), "_IndivPlots_", version, ".pdf"), width=8, height=8)
+VlnPlot(sc.integrated.subset, features = features, combine = FALSE, group.by = "Group",
+        flip = TRUE, same.y.lims = TRUE, split.plot = FALSE, cols = c("#F56D66", "#137D86"))
+dev.off()
+
+
+
+# Subset seurat onject to be clusters 1 and 3 only
+cluster_to_subset = c(3)
+Idents(sc.integrated) <- "seurat_clusters"
+sc.integrated.subset <- subset(sc.integrated, idents = cluster_to_subset)
+DimPlot(sc.integrated)
+DimPlot(sc.integrated.subset)
+DefaultAssay(sc.integrated.subset) <- "RNA"
+
+
+features = read.csv(file = paste0(basedir, "metadata/marker_genes_additional_V3.txt"), header = TRUE) %>% pull(marker_genes)
+
+for (gene in features){
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                    paste0(gene, collapse = "_"), "_SinglePlot_", version, ".pdf"), width=10, height=10)
+  print(VlnPlot(sc.integrated.subset, features = gene, group.by = "Group", cols = c("#F56D66", "#137D86")) +
+          labs(caption = paste0("Cluster ", cluster_to_subset)) + 
+          theme(plot.caption.position = "plot", plot.caption = element_text(hjust = 1, size = 20)))
+  dev.off()
+}
+
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                  paste0(features, collapse = "_"), "_TiledPlots_", version, ".pdf"), width=12, height=12)
+VlnPlot(sc.integrated.subset, features = features, combine = TRUE, group.by = "Group", 
+        same.y.lims = FALSE, split.plot = FALSE, cols = c("#F56D66", "#137D86")) + labs(caption = paste0("Cluster ", cluster_to_subset)) + theme(plot.caption.position = "plot",
+        plot.caption = element_text(hjust = 1, size = 20))
+VlnPlot(sc.integrated.subset, features = features, combine = TRUE, group.by = "Group",
+        same.y.lims = TRUE, split.plot = FALSE, cols = c("#F56D66", "#137D86")) + labs(caption = paste0("Cluster ", cluster_to_subset)) + theme(plot.caption.position = "plot",
+        plot.caption = element_text(hjust = 1, size = 20))
+dev.off()
+
+
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                  paste0(features, collapse = "_"), "_CombinedPlot_", version, ".pdf"), width=6, height=12)
+VlnPlot(sc.integrated.subset, features = features, combine = TRUE, split.by = "Group",
+        stack = TRUE, flip = TRUE, same.y.lims = TRUE, cols = c("#F56D66", "#137D86")) + NoLegend() + labs(title = paste0("Cluster ", cluster_to_subset))
+dev.off()
+
+
+pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_Cluster", cluster_to_subset, "_",
+                  paste0(features, collapse = "_"), "_IndivPlots_", version, ".pdf"), width=8, height=8)
+VlnPlot(sc.integrated.subset, features = features, combine = FALSE, group.by = "Group",
+        flip = TRUE, same.y.lims = TRUE, split.plot = FALSE, cols = c("#F56D66", "#137D86"))
+dev.off()
+
+
+
+```
