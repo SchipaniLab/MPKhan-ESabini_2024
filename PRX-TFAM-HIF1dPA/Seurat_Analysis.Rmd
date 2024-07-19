@@ -35,9 +35,6 @@ library(cowplot)
 
 version = "V3"
 
-# For loading parts of the previous analysis that are the same as this new version
-load_version = "V2"
-
 # rdatadir_saved <- paste0("", version, "/")
 
 project = "PRX-TFAM-HIF1dPA"
@@ -63,6 +60,7 @@ soupxpath <- "PRX-TFAM-HIF1dPA/output/SoupX/processed_data/"
 ```
 
 ``` {r Check if ouput dirs exist; if not, create}
+version = "V1"
 
 ifelse(!dir.exists(file.path(filepath, paste0("PDFs_", version))),
        dir.create(file.path(filepath, paste0("PDFs_", version))), "directory exists")
@@ -470,8 +468,12 @@ saveRDS(sc.integrated, file = paste(filepath, "RDS_", version, "/", "Periosteal_
 
 ```
 
+
+
 # CLUSTER AT DIFFERENT RESOLUTIONS (V1)
+
 ```{r}
+version = "V1"
 
 sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_Sch_integrated_SoupX_Seurat_wMetadata_", version, ".rds", sep=""))
 
@@ -646,11 +648,493 @@ for (i in res_levels){
 ```
 
 
+```{r}
+
+sc.integrated = readRDS(file = paste(filepath, "RDS_", version, "/", "Periosteal_Sch_integrated_SoupX_Seurat_wMetadata_", version, ".rds", sep=""))
+
+# Run for different resoultions of clustering
+res_levels <- c(0.8, 0.2, 0.1)
+
+for (i in res_levels){
+
+  # Find clusters at the specified resolution
+  sc.integrated <- FindClusters(sc.integrated, resolution = i) # trying to get 6-7 clusters
+
+  # save the integrated object
+  print("Writing RDS.")
+  saveRDS(sc.integrated, file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", i, ".rds", sep=""))
+
+
+
+  # PDF FILE OF A DIMPLOT AT SPECIFIED RESOLUTION
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlot_clusters_", version, "_", i, "res.pdf"), width=11, height=8.5)
+
+  print(DimPlot(sc.integrated, label = TRUE) +
+          ggtitle(paste0("Resolution = ", i))
+  )
+
+  dev.off()
+
+
+
+  # Create UMAP plots
+  pdf(file = paste0(filepath,"PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+
+  # by cluster (integrated)
+  print(
+    DimPlot(sc.integrated, reduction = "umap", label = TRUE, label.size = 6, repel = FALSE) +
+      ggtitle(paste0("Resolution = ", i))
+    )
+
+  # plot by sample
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Sample")
+    )
+
+  # split by sample
+  print(
+    DimPlot(sc.integrated, split.by = 'Sample', ncol = 2)
+    )
+
+  # by condition
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Group")
+    )
+
+  # split by group
+  print(
+    DimPlot(sc.integrated, split.by = 'Group', raster = FALSE, label = TRUE, label.size = 5)
+    )
+
+  dev.off()
+
+
+  # create violin/feature plots
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+
+  print(
+    VlnPlot(sc.integrated,
+            group.by = "seurat_clusters",
+            features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+            pt.size = 0.1, ncol = 3) +
+      NoLegend() +
+      labs(caption = paste0("Integrated, res ", i))
+    )
+
+  sc.integrated <- CellCycleScoring(object = sc.integrated, g2m.features = m.g2m.genes, s.features = m.s.genes)
+
+  print(
+    VlnPlot(sc.integrated,
+            features = c("S.Score", "G2M.Score"),
+            group.by = "seurat_clusters",
+            ncol = 2, pt.size = 0.1) +
+      labs(caption = paste0("Integrated, res ", i)))
+
+  dev.off()
+
+
+
+
+  # Make barplots that show the percentage/counts of cells from each SAMPLE in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Sample_Barplots_", version, "_res", i, ".pdf")),
+       width = 8, height = 10)
+
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = percent, fill = seurat_clusters)) +
+    geom_col() + xlab("Sample") +
+    ggtitle(paste0("Percentage of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_percents
+
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") + xlab("Sample") +
+    ggtitle(paste0("Number of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_numbers
+
+  print(cluster_percents)
+  print(cluster_numbers)
+
+  dev.off()
+
+  cluster_count_sample <- sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+
+  write.csv(cluster_count_sample, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Sample_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+
+
+  # Make barplots that show the percentage/counts of cells from each GROUP in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Group_Barplots_", version, "_res", i, ".pdf")),
+      width = 8, height = 10)
+
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = percent, fill = seurat_clusters)) +
+    geom_col() +
+    ggtitle(paste0("Percentage of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_percents
+
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") +
+    ggtitle(paste0("Number of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_numbers
+
+  print(group_cluster_percents)
+  print(group_cluster_numbers)
+
+  dev.off()
+
+  cluster_count_group <- sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+
+  write.csv(cluster_count_group, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Group_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+
+
+}
+
+
+```
+
+
+# V2 CHANGES START HERE
+
+``` {r Check if ouput dirs exist; if not, create}
+version = "V2"
+
+ifelse(!dir.exists(file.path(filepath, paste0("PDFs_", version))),
+       dir.create(file.path(filepath, paste0("PDFs_", version))), "directory exists")
+
+dirs <- c("Seurat_QC_Doublet_PDFs_", "Integrated_Data_PDFs_", "Seurat_DE_PDFs_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath, "PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+
+ifelse(!dir.exists(file.path(filepath, paste0("dataframes_", version))),
+       dir.create(file.path(filepath, paste0("dataframes_", version))), "directory exists")
+
+dirs <- c("Cluster_Markers_", "Cells_per_Cluster_", "Differential_Expression_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "dataframes_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath, "dataframes_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+ifelse(!dir.exists(file.path(filepath, paste0("RDS_", version))),
+       dir.create(file.path(filepath, paste0("RDS_", version))), "directory exists")
+
+
+dirs <- c("Marker_VlnPlots_", "Marker_FeatPlots_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "PDFs_", version, "/", "Integrated_Data_PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath,  "PDFs_", version, "/", "Integrated_Data_PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+
+```
+
+## Load the resolution 0.1 object, subset, and recluster
+
+``` {r Subclustering based on integrated clustering identities}
+
+# For loading parts of the previous analysis that are the same as this new version
+version = "V2"
+load_version = "V1"
+
+# Load in the Resolution 0.1 object from the V1 analysis
+sc.integrated = readRDS(file = paste0(filepath, "RDS_", load_version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", load_version, "_res", "0.1", ".rds"))
+
+
+# SUBSETTING TO KEEP CLUSTERS 7 – 1 – 10 – 2 – 12 – 11 – 9
+# Subset the cells to only include cluster(s) of interest
+Idents(sc.integrated) <- "seurat_clusters"
+sc.integrated <- subset(sc.integrated, idents = c(7, 1, 10, 2, 12, 11, 9))
+
+# Set integrated assay
+DefaultAssay(sc.integrated) <- "integrated"
+
+# Run PCA on the integrated assay using the new set of variable features
+sc.integrated <- RunPCA(sc.integrated, verbose = FALSE)
+sc.integrated <- RunUMAP(sc.integrated, reduction = "pca", dims = 1:50)
+
+# Run FindNeighbors and FindClusters using the new PC dimensions
+sc.integrated <- FindNeighbors(sc.integrated, reduction = "pca", dims = 1:50)
+
+
+# Run for different resoultions of clustering
+res_levels <- c(0.1, 0.2, 0.8)
+
+for (i in res_levels){
+  
+  # Find clusters at the specified resolution
+  sc.integrated <- FindClusters(sc.integrated, resolution = i) # trying to get 6-7 clusters
+  
+  # save the integrated object
+  print("Writing RDS.")
+  saveRDS(sc.integrated, file = paste(filepath, "RDS_", version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", version, "_res", i, ".rds", sep=""))
+  
+  
+  
+  # PDF FILE OF A DIMPLOT AT SPECIFIED RESOLUTION
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlot_clusters_", version, "_", i, "res.pdf"), width=11, height=8.5)
+  
+  print(DimPlot(sc.integrated, label = TRUE) +
+          ggtitle(paste0("Resolution = ", i))
+  )
+  
+  dev.off()
+  
+
+  
+  # Create UMAP plots
+  pdf(file = paste0(filepath,"PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_DimPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+  
+  # by cluster (integrated)
+  print(
+    DimPlot(sc.integrated, reduction = "umap", label = TRUE, label.size = 6, repel = FALSE) +
+      ggtitle(paste0("Resolution = ", i))
+    )
+  
+  # plot by sample
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Sample")
+    )
+  
+  # split by sample
+  print(
+    DimPlot(sc.integrated, split.by = 'Sample', ncol = 2)
+    )
+  
+  # by condition
+  print(
+    DimPlot(sc.integrated, reduction = "umap", group.by = "Group")
+    )
+  
+  # split by group
+  print(
+    DimPlot(sc.integrated, split.by = 'Group', raster = FALSE, label = TRUE, label.size = 5)
+    )
+  
+  dev.off()
+  
+  
+  # create violin/feature plots 
+  pdf(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Seurat_VlnPlots_", version, "_res", i, ".pdf"), width=11, height=8.5)
+  
+  print(
+    VlnPlot(sc.integrated,
+            group.by = "seurat_clusters",
+            features = c("nFeature_RNA", "nCount_RNA", "percent_mito"),
+            pt.size = 0.1, ncol = 3) +
+      NoLegend() +
+      labs(caption = paste0("Integrated, res ", i))
+    )
+  
+  sc.integrated <- CellCycleScoring(object = sc.integrated, g2m.features = m.g2m.genes, s.features = m.s.genes)
+  
+  print(
+    VlnPlot(sc.integrated,
+            features = c("S.Score", "G2M.Score"),
+            group.by = "seurat_clusters",
+            ncol = 2, pt.size = 0.1) +
+      labs(caption = paste0("Integrated, res ", i)))
+  
+  dev.off()
+  
+  
+  
+
+  # Make barplots that show the percentage/counts of cells from each SAMPLE in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Sample_Barplots_", version, "_res", i, ".pdf")),
+       width = 8, height = 10)
+  
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = percent, fill = seurat_clusters)) +
+    geom_col() + xlab("Sample") +
+    ggtitle(paste0("Percentage of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_percents
+  
+  sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    ungroup() %>%
+    ggplot(aes(x = Sample, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") + xlab("Sample") +
+    ggtitle(paste0("Number of cells from each sample in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> cluster_numbers
+  
+  print(cluster_percents)
+  print(cluster_numbers)
+  
+  dev.off()
+  
+  cluster_count_sample <- sc.integrated@meta.data %>%
+    group_by(Sample, seurat_clusters) %>%
+    count() %>%
+    group_by(Sample) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  write.csv(cluster_count_sample, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Sample_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+  
+  
+  # Make barplots that show the percentage/counts of cells from each GROUP in each cluster
+  pdf(file = paste0(file = paste0(filepath, "PDFs_", version, "/Integrated_Data_PDFs_", version, "/Integrated_Cells_per_cluster_by_Group_Barplots_", version, "_res", i, ".pdf")),
+      width = 8, height = 10)
+  
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = percent, fill = seurat_clusters)) +
+    geom_col() +
+    ggtitle(paste0("Percentage of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_percents
+  
+  sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    ungroup() %>%
+    ggplot(aes(x = Group, y = n, fill = seurat_clusters)) +
+    geom_col() + ylab("Number of cells") +
+    ggtitle(paste0("Number of cells from each group (control and mutant) in each cluster, res ", i)) +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) -> group_cluster_numbers
+  
+  print(group_cluster_percents)
+  print(group_cluster_numbers)
+    
+  dev.off()
+  
+  cluster_count_group <- sc.integrated@meta.data %>%
+    group_by(Group, seurat_clusters) %>%
+    count() %>%
+    group_by(Group) %>%
+    mutate(percent = 100 * n / sum(n)) %>%
+    ungroup()
+  
+  write.csv(cluster_count_group, file = paste0(filepath, "dataframes_", version, "/", "Integrated_Cells_per_cluster_by_Group_", version, "_res", i, ".csv"),
+            row.names = FALSE, quote = FALSE)
+
+
+}
+
+
+```
+
+
+
+
+
 # V3 CHANGES START HERE
+
+
+``` {r Check if ouput dirs exist; if not, create}
+version = "V3"
+
+ifelse(!dir.exists(file.path(filepath, paste0("PDFs_", version))),
+       dir.create(file.path(filepath, paste0("PDFs_", version))), "directory exists")
+
+dirs <- c("Seurat_QC_Doublet_PDFs_", "Integrated_Data_PDFs_", "Seurat_DE_PDFs_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath, "PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+
+ifelse(!dir.exists(file.path(filepath, paste0("dataframes_", version))),
+       dir.create(file.path(filepath, paste0("dataframes_", version))), "directory exists")
+
+dirs <- c("Cluster_Markers_", "Cells_per_Cluster_", "Differential_Expression_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "dataframes_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath, "dataframes_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+ifelse(!dir.exists(file.path(filepath, paste0("RDS_", version))),
+       dir.create(file.path(filepath, paste0("RDS_", version))), "directory exists")
+
+
+dirs <- c("Marker_VlnPlots_", "Marker_FeatPlots_")
+
+for (i in 1:length(dirs)){
+  if (!dir.exists(file.path(paste0(filepath, "PDFs_", version, "/", "Integrated_Data_PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))) {
+    dir.create(file.path(paste0(filepath,  "PDFs_", version, "/", "Integrated_Data_PDFs_", version, "/", dirs[i], version, "/"),  fsep="/"))
+    print(paste0(dirs[i], version, " created"))
+  } else {
+    print(paste0(dirs[i], version, " exists"))
+  }
+}
+
+
+```
 
 ## Load the resolution 0.1 object. from V2, subset, and recluster
 
 ``` {r Subclustering based on integrated clustering identities}
+version = "V3"
+load_version = "V2"
 
 # Load in the Resolution 0.1 object from the V2 analysis
 sc.integrated = readRDS(file = paste0(filepath, "RDS_", load_version, "/", "Periosteal_PRX-TFAM-HIF1dPA_FullyIntegrated_SoupX_Seurat_", load_version, "_res", "0.1", ".rds"))
