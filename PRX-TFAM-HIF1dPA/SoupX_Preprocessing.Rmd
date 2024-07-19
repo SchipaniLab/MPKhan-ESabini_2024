@@ -1,0 +1,140 @@
+---
+title: "PRX-TFAM-HIF1dPA Periosteal cells: SoupX Pre-processing"
+author: "Kat Beigel"
+date: "3/1/2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# remotes::install_version("Seurat", "4.4.0", repos = c("https://satijalab.r-universe.dev", getOption("repos")))
+
+library(SoupX)
+library(Seurat)
+options(Seurat.object.assay.version = 'v3') # NEED TO DO THIS BECAUSE DOUBLET FINDER DOES NOT KNOW THE V5 format
+    # Seurat v4 was just loaded with SeuratObject v5; disabling v5 assays and validation routines, and
+    # ensuring assays work in strict v3/v4 compatibility mode
+library(ggplot2)
+# library(future)
+# library(parallelly)
+
+```
+
+```{r setup_future, include=FALSE}
+#this is used for future: Rerun if you crash or interrupt the session.
+#reset (rerun) for every new round of analysis even if you change a line and re-run (always)
+# machine_use_mem_limit_Mb <- 1000000
+# unit_mem_limit <- 50000 #in Mb
+# options(future.globals.maxSize = machine_use_mem_limit_Mb*2^20) #calculates in bytes
+# plan("multisession", workers = floor(machine_use_mem_limit_Mb/unit_mem_limit))
+# future.seed = TRUE 
+
+```
+
+```{r Directories and filenames}
+# Change this for your directory head
+filename_header <- "PRX-TFAM-HIF1dPA/"
+data_location <- "data/"
+
+# List all the files
+filelist_names <- list.files(data_location)[1:4]
+
+```
+
+
+```{r Pre-processing}
+
+for(filename in filelist_names){
+  
+  path <- paste0(data_location, filename)
+  
+  print(filename)
+  
+  pdf(file = paste0(filename_header, "output/SoupX/processed_data/", filename, "_QC_prep.pdf"))
+  
+  rawfilepath <- paste0(path,"/outs/raw_feature_bc_matrix/")
+  filtfilepath <- paste0(path, "/outs/filtered_feature_bc_matrix/")
+  
+  rawfile <- Read10X(rawfilepath)
+  filtfile <- Read10X(filtfilepath)
+  
+  #this is just identifying clusters for SoupX
+  #read about these steps at https://satijalab.org/seurat/articles/pbmc3k_tutorial.html
+  filtfile.seurat <- CreateSeuratObject(counts = filtfile)
+
+# SCTransform() is a new method that takes over from NormalizeData and FindVariableFeatures and ScaleData
+# See https://satijalab.org/seurat/articles/sctransform_v2_vignette.html
+
+  # # Option1: standard approach using NormalizeData(), FindVaraibleFeatures(), and ScaleData()
+  # filtfile.seurat <- NormalizeData(object = filtfile.seurat)
+  # filtfile.seurat <- FindVariableFeatures(object = filtfile.seurat)
+  # filtfile.seurat <- ScaleData(object = filtfile.seurat)
+
+  # Option2: updated approach using SCTransform()
+  filtfile.seurat <- SCTransform(filtfile.seurat, method = "glmGamPoi")
+
+# These steps are used for clustering setup and umap setup for plotting and cluster finding.
+# Check the defaults in ?RunPCA etc.
+
+  filtfile.seurat <- RunPCA(object = filtfile.seurat, npcs = 50) # default is 50
+  filtfile.seurat <- RunUMAP(object = filtfile.seurat, dims = 1:50) 
+  filtfile.seurat <- FindNeighbors(object = filtfile.seurat, dims = 1:50) # default is 1:10
+  filtfile.seurat <- FindClusters(object = filtfile.seurat, resolution = 0.8)
+
+  print(DimPlot(object = filtfile.seurat, reduction = "umap") + ggtitle(paste(filename, "pre SoupX")))
+
+  #identify names of clusters.
+  toc_clusters <- filtfile.seurat@meta.data$seurat_clusters # examine with toc_clusters[1:10]
+  names(toc_clusters) <- names(filtfile.seurat@active.ident)
+ 
+  # soupx call
+  sc = SoupChannel(rawfile, filtfile)
+  sc = setClusters(sc, toc_clusters)
+  sc = autoEstCont(sc)
+  soupx_out = adjustCounts(sc, roundToInt=TRUE)
+ 
+  #save some space
+   rm(rawfile)
+   rm(filtfile)
+
+   # use the soupX adjusted data
+   sc <- CreateSeuratObject(counts = soupx_out, project = filename)
+   
+  #this is the directory where the processed data will be stored.
+  saveRDS(sc, file = paste0(filename_header, "output/SoupX/processed_data/", filename, "_SoupX.rds")) 
+  
+ # Reprocess the data now that the SoupX adjustments have been applied
+  
+  # Option1: standard approach using NormalizeData(), FindVaraibleFeatures(), and ScaleData()
+  #  postfiltfile.seurat <- NormalizeData(object = sc)
+  #  postfiltfile.seurat <- FindVariableFeatures(object = postfiltfile.seurat)
+  #  postfiltfile.seurat <- ScaleData(object = postfiltfile.seurat)
+
+  #  postfiltfile.seurat <- RunPCA(object = postfiltfile.seurat)
+  #  postfiltfile.seurat <- RunUMAP(object = postfiltfile.seurat, dims = 1:50)
+  #  postfiltfile.seurat <- FindNeighbors(object = postfiltfile.seurat)
+  #  postfiltfile.seurat <- FindClusters(object = postfiltfile.seurat)
+  
+  #  print(DimPlot(object = postfiltfile.seurat , reduction = "umap") + ggtitle(paste(filename, "POST SoupX")))
+ 
+  # save(postfiltfile.seurat, file = paste(filename_header, "processed_data/", filename, "_SoupX_NFS.Rdata", sep = ""))
+
+  
+  # Option2: updated approach using SCTransform()
+  postfiltfile.seurat <- SCTransform(sc, method = "glmGamPoi")
+
+  postfiltfile.seurat <- RunPCA(object = postfiltfile.seurat, npcs = 50)
+  postfiltfile.seurat <- RunUMAP(object = postfiltfile.seurat, dims = 1:50)
+  postfiltfile.seurat <- FindNeighbors(object = postfiltfile.seurat, dims = 1:50)
+  postfiltfile.seurat <- FindClusters(object = postfiltfile.seurat, resolution = 0.8)
+
+  print(DimPlot(object = postfiltfile.seurat , reduction = "umap") + ggtitle(paste(filename, "POST SoupX")))
+
+  saveRDS(postfiltfile.seurat, file = paste0(filename_header, "output/SoupX/processed_data/", filename, "_SoupX_SCT.rds"))
+
+ dev.off()
+ 
+}
+
+```
