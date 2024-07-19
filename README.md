@@ -17,5 +17,5 @@ There are two analyses within this respository. For both of these analyses ([PRX
 <br>
 
 ## Additional information
-Sample names from all scripts correspond to the **sample titles** (without the GSM accession prefix) from the Gene Expression Omnibus (GEO) Series for the data used in the publication: [Series GSE261114](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE261114). 
+Sample names from all scripts correspond to the **sample titles** (without the GSM accession prefix) from the Gene Expression Omnibus (GEO) Series for the data used in the publication: [Series GSE261114](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE261114). Please see each project's `SoupX_Preprocessing.Rmd` script for how the GEO files should be renamed/reorganized to match the script.
 
