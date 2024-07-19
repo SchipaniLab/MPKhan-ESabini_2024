@@ -1,5 +1,5 @@
 ---
-title: "Periosteal_Seurat_Analyses_V6"
+title: "PRX-TFAM_Periosteal_Seurat_Analysis_V6"
 author: "Kat Beigel"
 date: "5/17/2023"
 output: html_document
@@ -33,7 +33,7 @@ library(cowplot)
 
 filepath <- "Periosteal_cells/output/"
 
-rdatadir <- "Periosteal_cells/preprocess_res_08/"
+rdatadir <- "Periosteal_cells/processed_data/"
 
 outpath <- "Periosteal_cells/output/"
 
@@ -61,18 +61,6 @@ for (i in 1:length(dirs)){
     print(paste0(dirs[i], version, " exists"))
   }
 }
-
-```
-
-```{r Set file paths for initial analysis}
-
-# #filepath.load <- "projects/"
-# 
-# filepath <- "Periosteal_cells/processed_data/"
-# 
-# rdatadir <- "Periosteal_cells/processed_data/"
-# 
-# outpath <- "Periosteal_cells/output/"
 
 ```
 
@@ -332,14 +320,14 @@ DimPlot(sc.integrated, label = TRUE) +
 dev.off()
 
 #save the integrated object
-save(sc.integrated, file = paste(rdatadir_saved, "Periosteal_Sch_fully_integrated_SoupX_Seurat_", version, "_res0.1.Rdata", sep=""))
+save(sc.integrated, file = paste(rdatadir_saved, "Periosteal__fully_integrated_SoupX_Seurat_", version, "_res0.1.Rdata", sep=""))
 
 ```
 
 ``` {r Subclustering based on integrated clustering identities}
 
 #load it if you're starting here
-load(paste0(rdatadir_saved, "Periosteal_Sch_fully_integrated_SoupX_Seurat_", version, "_res0.1.Rdata"))
+load(paste0(rdatadir_saved, "Periosteal__fully_integrated_SoupX_Seurat_", version, "_res0.1.Rdata"))
 
 
 # Use mgsub to add new metadata column (https://github.com/cran/mgsub)
