@@ -53,11 +53,20 @@ for(filename in filelist_names){
   
   pdf(file = paste0(filename_header, "output/SoupX/processed_data/", filename, "_QC_prep.pdf"))
   
-  rawfilepath <- paste0(path,"/outs/raw_feature_bc_matrix/")
-  filtfilepath <- paste0(path, "/outs/filtered_feature_bc_matrix/")
+# Read 10X outs
+  rawfilepath <- paste(path,"/outs/raw_feature_bc_matrix/", sep="")
+  filtfilepath <- paste(path, "/outs/filtered_feature_bc_matrix/", sep="")
   
   rawfile <- Read10X(rawfilepath)
   filtfile <- Read10X(filtfilepath)
+
+# Read h5 files
+  # rawfilepath <- paste(path,"/outs/raw_feature_bc_matrix.h5", sep="")
+  # filtfilepath <- paste(path, "/outs/filtered_feature_bc_matrix.h5", sep="")
+  
+  # rawfile <- Read10X(rawfilepath)
+  # filtfile <- Read10X(filtfilepath)
+
   
   #this is just identifying clusters for SoupX
   #read about these steps at https://satijalab.org/seurat/articles/pbmc3k_tutorial.html
