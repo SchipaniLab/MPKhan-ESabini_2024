@@ -4,7 +4,7 @@ Code for the 2024 Schipani Lab publication "HIF1 activation safeguards cortical 
 <br>
 
 ## Analyses
-There are two analyses within this respository. For both of these analyses ([PRX-TFAM](https://github.com/SchipaniLab/MPKhan-ESabini_2024/tree/main/PRX-TFAM) and [PRX-TFAM-HIF1dPA](https://github.com/SchipaniLab/MPKhan-ESabini_2024/tree/main/PRX-TFAM-HIF1dPA)), the `.Rdata` objects output from the `SoupX_Preprocessing.Rmd` code was used as input for `Seurat_Analysis.Rmd`.
+There are two analyses within this respository. For both of these analyses ([PRX-TFAM](https://github.com/SchipaniLab/MPKhan-ESabini_2024/tree/main/PRX-TFAM) and [PRX-TFAM-HIF1dPA](https://github.com/SchipaniLab/MPKhan-ESabini_2024/tree/main/PRX-TFAM-HIF1dPA)), the `.Rdata` objects output from the `SoupX_Preprocessing.Rmd` code were used as input for `Seurat_Analysis.Rmd`.
 
 ### **[PRX-TFAM](https://github.com/SchipaniLab/MPKhan-ESabini_2024/tree/main/PRX-TFAM)**
   - `SoupX_Preprocessing.Rmd`
