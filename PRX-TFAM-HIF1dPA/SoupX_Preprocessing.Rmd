@@ -5,6 +5,8 @@ date: "3/1/2024"
 output: html_document
 ---
 
+INPUT FILES SHOULD BE STRUCTURED ACCORDING TO TYPICAL CELLRANGER OUTPUT: SampleName/outs/
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
